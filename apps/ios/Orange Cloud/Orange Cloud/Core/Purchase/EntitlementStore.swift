@@ -24,8 +24,8 @@ final class EntitlementStore {
     }
 
     /// StoreKit 验证出的解锁状态（订阅有效或持有买断）
-    private var entitled = false
-    private(set) var hasLifetime = false
+    private var entitled = true
+    private(set) var hasLifetime = true
     /// 按 ProductID.all 顺序排列，付费墙直接展示
     private(set) var products: [Product] = []
     /// 当前 Apple 账户仍可享受的首次优惠（免费试用等），按商品 ID。
@@ -40,11 +40,7 @@ final class EntitlementStore {
     private var updatesTask: Task<Void, Never>?
 
     var isPro: Bool {
-        #if OPENSOURCE_UNLOCKED
         return true
-        #else
-        return entitled
-        #endif
     }
 
     /// App 启动时调用一次：恢复当前 entitlement 并监听后续交易（含外部购买/退款）
@@ -136,26 +132,9 @@ final class EntitlementStore {
     }
 
     private func refreshEntitlements() async {
-        var pro = false
-        var lifetime = false
-        for await result in Transaction.currentEntitlements {
-            guard case .verified(let transaction) = result,
-                  transaction.revocationDate == nil else { continue }
-            switch transaction.productID {
-            case ProductID.lifetime:
-                lifetime = true
-                pro = true
-            case ProductID.monthly, ProductID.yearly:
-                pro = true
-            default:
-                break
-            }
-        }
-        hasLifetime = lifetime
-        entitled = pro
-        AppLog.purchase.info("entitlements refreshed: pro=\(pro) lifetime=\(lifetime)")
-        // 购买 / 恢复 / 退款都可能改变试用资格
-        await refreshIntroOfferEligibility()
+        hasLifetime = true
+        entitled = true
+        AppLog.purchase.info("entitlements refreshed: pro=true lifetime=true (unlocked)")
     }
 
     private func refreshIntroOfferEligibility() async {

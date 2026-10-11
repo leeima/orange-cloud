@@ -69,36 +69,24 @@ struct SettingsView: View {
                 }
                 .glassRow()
 
-                // ── Orange Cloud Pro（开源自编译构建无此入口）──
-                #if !OPENSOURCE_UNLOCKED
+                // ── Orange Cloud Pro（已解锁全部功能）──
                 Section {
-                    Button {
-                        showProPaywall = true
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "sparkles", color: .ocOrange)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Orange Cloud Pro")
-                                    .foregroundStyle(.primary)
-                                Text(entitlements.isPro ? "已解锁，感谢支持" : "多账号与专业功能")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if entitlements.isPro {
-                                Image(systemName: "checkmark.seal.fill")
-                                    .foregroundStyle(Color.ocOrangeText)
-                            } else {
-                                Image(systemName: "chevron.right")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.tertiary)
-                            }
+                    HStack(spacing: 12) {
+                        TintIcon(systemImage: "sparkles", color: .ocOrange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Orange Cloud Pro")
+                                .foregroundStyle(.primary)
+                            Text("已解锁全部功能")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        .padding(.vertical, 2)
+                        Spacer()
+                        Image(systemName: "checkmark.seal.fill")
+                            .foregroundStyle(Color.ocOrangeText)
                     }
+                    .padding(.vertical, 2)
                 }
                 .glassRow()
-                #endif
 
                 // ── 用量口径 ──
                 Section {
