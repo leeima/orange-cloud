@@ -31,9 +31,15 @@ jobs:
           fi
           xcodebuild -version
 
+      - name: Show Available Destinations
+        run: |
+          cd "apps/ios/Orange Cloud"
+          xcodebuild -project "Orange Cloud.xcodeproj" -scheme "Orange Cloud" -showdestinations || true
+
       - name: Build & Archive iOS App
         run: |
           cd "apps/ios/Orange Cloud"
+          set -o pipefail
           xcodebuild archive \
             -project "Orange Cloud.xcodeproj" \
             -scheme "Orange Cloud" \
@@ -45,7 +51,13 @@ jobs:
             PROVISIONING_PROFILE_SPECIFIER="" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_ENTITLEMENTS="" \
+            COMPILER_INDEX_STORE_ENABLE=NO 2>&1 | tee xcodebuild.log || {
+              echo "==================== BUILD FAILED: LAST 100 LINES ===================="
+              tail -n 100 xcodebuild.log
+              exit 1
+            }
 
       - name: Package into IPA
         run: |
