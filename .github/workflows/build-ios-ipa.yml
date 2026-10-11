@@ -18,18 +18,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode version
+      - name: Select Working Xcode with iOS Platform
         run: |
-          if [ -d "/Applications/Xcode_16.2.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.2.app
-          elif [ -d "/Applications/Xcode_16.1.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.1.app
-          elif [ -d "/Applications/Xcode_16.0.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.0.app
-          elif [ -d "/Applications/Xcode_16.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.app
+          cd "apps/ios/Orange Cloud"
+          echo "=== All Available Xcode Versions ==="
+          ls -ld /Applications/Xcode*
+          
+          FOUND_XCODE=""
+          # Check each installed Xcode to find which one has the iOS platform installed
+          for app in /Applications/Xcode.app $(ls -d /Applications/Xcode_*.app 2>/dev/null); do
+            echo "Testing $app ..."
+            sudo xcode-select -s "$app"
+            if xcodebuild -project "Orange Cloud.xcodeproj" -scheme "Orange Cloud" -showdestinations 2>&1 | grep -A 10 "Eligible destinations" | grep -q "platform:iOS"; then
+              echo ">>> Selected $app (has eligible iOS destination)"
+              FOUND_XCODE="$app"
+              break
+            fi
+          done
+          
+          if [ -z "$FOUND_XCODE" ]; then
+            echo "No Xcode has eligible iOS platform pre-installed, trying to download iOS platform..."
+            xcodebuild -downloadPlatform iOS || true
           fi
+          
           xcodebuild -version
+          xcodebuild -showsdks
 
       - name: Show Available Destinations
         run: |
