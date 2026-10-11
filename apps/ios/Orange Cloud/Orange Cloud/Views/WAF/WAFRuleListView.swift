@@ -37,6 +37,86 @@ struct WAFRuleListView: View {
     }
 
     var body: some View {
+        bodyWithDialogs
+        .alert("暂不支持编辑", isPresented: $showUnsupportedEdit) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("「跳过」等带额外参数的规则暂不支持在 App 内编辑，请在 Cloudflare Dashboard 中修改。")
+        }
+        .alert("权限不足", isPresented: $showDenied) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("当前授权未包含 WAF 编辑权限（zone-waf.write）。\n请在设置中退出登录后重新授权以启用此功能。")
+        }
+        .alert("出错了", isPresented: .init(
+            get: { viewModel.error != nil && !showForm && editingRule == nil },
+            set: { if !$0 { viewModel.error = nil } }
+        )) {
+            apiErrorDocButton(for: viewModel.error)
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(viewModel.error ?? "")
+        }
+    }
+
+    // MARK: - body 拆分
+    //
+    // 原 body 是单个上百行的表达式：内容 + 十几个 modifier（background / toolbar /
+    // overlay / sheet / alert / confirmationDialog …）全部串在一条链上。这些 modifier
+    // 多数是重载函数，Release 配置下 Swift 类型检查器无法在合理时间内完成重载解析，
+    // 报 unable to type-check this expression in reasonable time（报错位置正是 body 开括号）。
+    // 这里拆成若干独立属性，把「一次性推断整条链」降为「分段推断」。
+
+    /// 删除确认弹窗
+    private var bodyWithDialogs: some View {
+        bodyWithChrome
+        .confirmationDialog(
+            "删除规则",
+            isPresented: .init(
+                get: { ruleToDelete != nil },
+                set: { if !$0 { ruleToDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let rule = ruleToDelete {
+                Button("删除「\(rule.description ?? String(localized: "未命名规则"))」", role: .destructive) {
+                    Task { await viewModel.delete(rule: rule) }
+                }
+            }
+        } message: {
+            Text("此操作不可撤销，规则将立即停止生效。")
+        }
+    }
+
+    /// 导航 / 搜索 / 工具栏 / 表单 sheet
+    private var bodyWithChrome: some View {
+        mainContent
+        .background { SkyBackground() }
+        .navigationTitle("WAF 防火墙")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "搜索规则")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("添加", systemImage: "plus") {
+                    if canWrite {
+                        showForm = true
+                    } else {
+                        showDenied = true
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showForm) {
+            WAFRuleFormView(viewModel: viewModel, rule: nil)
+        }
+        .sheet(item: $editingRule) { rule in
+            WAFRuleFormView(viewModel: viewModel, rule: rule)
+        }
+        .task { await viewModel.load() }
+    }
+
+    /// 列表主体（骨架屏 / 空态 / 搜索无结果 / 规则列表）
+    private var mainContent: some View {
         Group {
             if viewModel.isLoading && !viewModel.loaded {
                 SkeletonList(rows: 6, icon: .none, trailing: true)
@@ -102,63 +182,6 @@ struct WAFRuleListView: View {
                 .scrollContentBackground(.hidden)
                 .refreshable { await detachedRefresh { await viewModel.load() } }
             }
-        }
-        .background { SkyBackground() }
-        .navigationTitle("WAF 防火墙")
-        .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, prompt: "搜索规则")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("添加", systemImage: "plus") {
-                    if canWrite {
-                        showForm = true
-                    } else {
-                        showDenied = true
-                    }
-                }
-            }
-        }
-        .sheet(isPresented: $showForm) {
-            WAFRuleFormView(viewModel: viewModel, rule: nil)
-        }
-        .sheet(item: $editingRule) { rule in
-            WAFRuleFormView(viewModel: viewModel, rule: rule)
-        }
-        .task { await viewModel.load() }
-        .confirmationDialog(
-            "删除规则",
-            isPresented: .init(
-                get: { ruleToDelete != nil },
-                set: { if !$0 { ruleToDelete = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let rule = ruleToDelete {
-                Button("删除「\(rule.description ?? String(localized: "未命名规则"))」", role: .destructive) {
-                    Task { await viewModel.delete(rule: rule) }
-                }
-            }
-        } message: {
-            Text("此操作不可撤销，规则将立即停止生效。")
-        }
-        .alert("暂不支持编辑", isPresented: $showUnsupportedEdit) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text("「跳过」等带额外参数的规则暂不支持在 App 内编辑，请在 Cloudflare Dashboard 中修改。")
-        }
-        .alert("权限不足", isPresented: $showDenied) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text("当前授权未包含 WAF 编辑权限（zone-waf.write）。\n请在设置中退出登录后重新授权以启用此功能。")
-        }
-        .alert("出错了", isPresented: .init(
-            get: { viewModel.error != nil && !showForm && editingRule == nil },
-            set: { if !$0 { viewModel.error = nil } }
-        )) {
-            apiErrorDocButton(for: viewModel.error)
-            Button("好", role: .cancel) {}
-        } message: {
-            Text(viewModel.error ?? "")
         }
     }
 }

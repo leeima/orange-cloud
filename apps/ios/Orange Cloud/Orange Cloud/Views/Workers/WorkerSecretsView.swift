@@ -32,33 +32,38 @@ struct WorkerSecretsView: View {
     private var canBind:    Bool { canWrite && (canReadD1 || canReadKV || canReadR2) }
 
     var body: some View {
-        Group {
-            if !viewModel.loaded && viewModel.isLoading {
-                SkeletonList(rows: 5, icon: .none, trailing: true)
-            } else {
-                List {
-                    secretsSection
-                    variablesSection
-                    if !viewModel.otherBindings.isEmpty || canBind {
-                        otherSection
-                    }
-                }
-                .scrollContentBackground(.hidden)
-                .refreshable { await viewModel.load() }
+        listWithDeleteDialogs
+        .task { if !viewModel.loaded { await viewModel.load() } }
+        .sheet(item: $sheet) { kind in
+            switch kind {
+            case .bulkImport:
+                WorkerBulkImportSheet(viewModel: viewModel)
+            case .bindResource:
+                WorkerBindResourceSheet(viewModel: viewModel, canReadD1: canReadD1, canReadKV: canReadKV, canReadR2: canReadR2)
+            default:
+                WorkerValueEditorSheet(kind: kind, viewModel: viewModel)
             }
         }
-        .background { SkyBackground() }
-        .navigationTitle("变量与密钥")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if canWrite {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("批量导入 JSON", systemImage: "arrow.down.doc") {
-                        sheet = .bulkImport
-                    }
-                }
-            }
+        .alert("出错了", isPresented: .init(
+            get: { viewModel.error != nil && sheet == nil },
+            set: { if !$0 { viewModel.error = nil } }
+        )) {
+            apiErrorDocButton(for: viewModel.error)
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(viewModel.error ?? "")
         }
+    }
+
+    // MARK: - body 拆分
+    //
+    // 原 body 是单个 80 行表达式：3 个 confirmationDialog + sheet + alert 全部串在一条
+    // modifier 链上，Release 配置下类型检查器报 unable to type-check this expression in
+    // reasonable time。按「内容 / 外壳 / 弹窗」拆成三个独立属性，各自单独推断。
+
+    /// 三个删除/解绑确认弹窗
+    private var listWithDeleteDialogs: some View {
+        listWithChrome
         .confirmationDialog(
             secretToDelete.map { String(localized: "删除密钥「\($0.name)」？") } ?? "",
             isPresented: Binding(get: { secretToDelete != nil }, set: { if !$0 { secretToDelete = nil } }),
@@ -90,25 +95,41 @@ struct WorkerSecretsView: View {
         } message: {
             Text("仅解除该 Worker 与此资源的绑定，不会删除资源本身。")
         }
-        .task { if !viewModel.loaded { await viewModel.load() } }
-        .sheet(item: $sheet) { kind in
-            switch kind {
-            case .bulkImport:
-                WorkerBulkImportSheet(viewModel: viewModel)
-            case .bindResource:
-                WorkerBindResourceSheet(viewModel: viewModel, canReadD1: canReadD1, canReadKV: canReadKV, canReadR2: canReadR2)
-            default:
-                WorkerValueEditorSheet(kind: kind, viewModel: viewModel)
+    }
+
+    /// 列表外壳：背景 / 标题 / 工具栏
+    private var listWithChrome: some View {
+        mainList
+        .background { SkyBackground() }
+        .navigationTitle("变量与密钥")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if canWrite {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("批量导入 JSON", systemImage: "arrow.down.doc") {
+                        sheet = .bulkImport
+                    }
+                }
             }
         }
-        .alert("出错了", isPresented: .init(
-            get: { viewModel.error != nil && sheet == nil },
-            set: { if !$0 { viewModel.error = nil } }
-        )) {
-            apiErrorDocButton(for: viewModel.error)
-            Button("好", role: .cancel) {}
-        } message: {
-            Text(viewModel.error ?? "")
+    }
+
+    /// 列表内容
+    private var mainList: some View {
+        Group {
+            if !viewModel.loaded && viewModel.isLoading {
+                SkeletonList(rows: 5, icon: .none, trailing: true)
+            } else {
+                List {
+                    secretsSection
+                    variablesSection
+                    if !viewModel.otherBindings.isEmpty || canBind {
+                        otherSection
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .refreshable { await viewModel.load() }
+            }
         }
     }
 

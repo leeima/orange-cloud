@@ -94,6 +94,101 @@ struct ZoneDetailView: View {
     }
 
     var body: some View {
+        bodyWithOverlays
+        .alert("权限不足", isPresented: $showActionDenied) {
+            if let sessionId = auth.currentSessionId, !deniedScopeHint.isEmpty {
+                Button("一键重授权") {
+                    let scope = deniedScopeHint
+                    Task { await auth.reauthorize(sessionId: sessionId, additionalScopes: [scope]) }
+                }
+            }
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("当前授权未包含此操作所需权限（\(deniedScopeHint)）。点「一键重授权」补齐，无需退出登录。")
+        }
+        .alert("操作失败", isPresented: .init(
+            get: { actionsViewModel.error != nil },
+            set: { if !$0 { actionsViewModel.error = nil } }
+        )) {
+            apiErrorDocButton(for: actionsViewModel.error)
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(actionsViewModel.error ?? "")
+        }
+    }
+
+    /// 权限不足 / 操作失败提示
+    private var bodyWithOverlays: some View {
+        bodyWithChrome
+        .confirmationDialog(
+            pendingAction?.title ?? "",
+            isPresented: .init(
+                get: { pendingAction != nil },
+                set: { if !$0 { pendingAction = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingAction
+        ) { action in
+            Button(action.confirmLabel) {
+                Task {
+                    switch action {
+                    case .underAttack(let on): await actionsViewModel.setUnderAttack(on)
+                    case .devMode(let on):     await actionsViewModel.setDevMode(on)
+                    case .pause(let on):
+                        if await actionsViewModel.setPaused(on) {
+                            writeBackPaused(actionsViewModel.paused)
+                        }
+                    }
+                }
+            }
+        } message: { action in
+            Text(action.message(zoneName: zone.name))
+        }
+        .confirmationDialog("清理全部缓存？", isPresented: $showPurgeConfirm, titleVisibility: .visible) {
+            Button("清理", role: .destructive) {
+                Task { await actionsViewModel.purgeCache() }
+            }
+        } message: {
+            Text("将清空 \(zone.name) 在 Cloudflare 边缘的所有缓存，回源流量会短暂上升。")
+        }
+        .alert("缓存已清理", isPresented: $showPurgeDone) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("边缘节点将在数秒内完成清理。")
+        }
+        .confirmationDialog("标记过期", isPresented: $showInvalidateConfirm, titleVisibility: .visible) {
+            Button("标记过期") {
+                Task { await actionsViewModel.purgeCache(action: .invalidate) }
+            }
+        } message: {
+            Text(String(localized: "将把该域名的全部缓存标记为过期。") + "\n"
+                 + String(localized: "保留缓存但标记为过期，下次请求时向源站校验；内容没变（304）就继续用缓存。需要源站返回 ETag 或 Last-Modified。"))
+        }
+        .alert("已标记为过期", isPresented: $showInvalidateDone) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("保留缓存但标记为过期，下次请求时向源站校验；内容没变（304）就继续用缓存。需要源站返回 ETag 或 Last-Modified。")
+        }
+        .sheet(isPresented: $showPurgeSheet) {
+            PurgeCacheSheet(zoneName: zone.name) { mode, items, action in
+                switch mode {
+                case .url:    await actionsViewModel.purgeURLs(items, action: action)
+                case .prefix: await actionsViewModel.purgePrefixes(items, action: action)
+                case .host:   await actionsViewModel.purgeHosts(items, action: action)
+                case .tag:    await actionsViewModel.purgeTags(items, action: action)
+                }
+            }
+        }
+        .onChange(of: actionsViewModel.didPurge) {
+            showPurgeDone = true
+        }
+        .onChange(of: actionsViewModel.didInvalidate) {
+            showInvalidateDone = true
+        }
+    }
+
+    /// 导航栏 / 工具栏 / 生命周期（task / refreshable）
+    private var bodyWithChrome: some View {
         mainContent
         .background { SkyBackground() }
         .navigationTitle(zone.name)
@@ -161,91 +256,6 @@ struct ZoneDetailView: View {
                 await actionsViewModel.loadPrecursor()
             }
             await syncPausedFromAPI()
-        }
-        .confirmationDialog(
-            pendingAction?.title ?? "",
-            isPresented: .init(
-                get: { pendingAction != nil },
-                set: { if !$0 { pendingAction = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: pendingAction
-        ) { action in
-            Button(action.confirmLabel) {
-                Task {
-                    switch action {
-                    case .underAttack(let on): await actionsViewModel.setUnderAttack(on)
-                    case .devMode(let on):     await actionsViewModel.setDevMode(on)
-                    case .pause(let on):
-                        if await actionsViewModel.setPaused(on) {
-                            writeBackPaused(actionsViewModel.paused)
-                        }
-                    }
-                }
-            }
-        } message: { action in
-            Text(action.message(zoneName: zone.name))
-        }
-        .confirmationDialog("清理全部缓存？", isPresented: $showPurgeConfirm, titleVisibility: .visible) {
-            Button("清理", role: .destructive) {
-                Task { await actionsViewModel.purgeCache() }
-            }
-        } message: {
-            Text("将清空 \(zone.name) 在 Cloudflare 边缘的所有缓存，回源流量会短暂上升。")
-        }
-        .alert("缓存已清理", isPresented: $showPurgeDone) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text("边缘节点将在数秒内完成清理。")
-        }
-        .confirmationDialog("标记过期", isPresented: $showInvalidateConfirm, titleVisibility: .visible) {
-            Button("标记过期") {
-                Task { await actionsViewModel.purgeCache(action: .invalidate) }
-            }
-        } message: {
-            Text(String(localized: "将把该域名的全部缓存标记为过期。") + "\n"
-                 + String(localized: "保留缓存但标记为过期，下次请求时向源站校验；内容没变（304）就继续用缓存。需要源站返回 ETag 或 Last-Modified。"))
-        }
-        .alert("已标记为过期", isPresented: $showInvalidateDone) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text("保留缓存但标记为过期，下次请求时向源站校验；内容没变（304）就继续用缓存。需要源站返回 ETag 或 Last-Modified。")
-        }
-        .sheet(isPresented: $showPurgeSheet) {
-            PurgeCacheSheet(zoneName: zone.name) { mode, items, action in
-                switch mode {
-                case .url:    await actionsViewModel.purgeURLs(items, action: action)
-                case .prefix: await actionsViewModel.purgePrefixes(items, action: action)
-                case .host:   await actionsViewModel.purgeHosts(items, action: action)
-                case .tag:    await actionsViewModel.purgeTags(items, action: action)
-                }
-            }
-        }
-        .onChange(of: actionsViewModel.didPurge) {
-            showPurgeDone = true
-        }
-        .onChange(of: actionsViewModel.didInvalidate) {
-            showInvalidateDone = true
-        }
-        .alert("权限不足", isPresented: $showActionDenied) {
-            if let sessionId = auth.currentSessionId, !deniedScopeHint.isEmpty {
-                Button("一键重授权") {
-                    let scope = deniedScopeHint
-                    Task { await auth.reauthorize(sessionId: sessionId, additionalScopes: [scope]) }
-                }
-            }
-            Button("好", role: .cancel) {}
-        } message: {
-            Text("当前授权未包含此操作所需权限（\(deniedScopeHint)）。点「一键重授权」补齐，无需退出登录。")
-        }
-        .alert("操作失败", isPresented: .init(
-            get: { actionsViewModel.error != nil },
-            set: { if !$0 { actionsViewModel.error = nil } }
-        )) {
-            apiErrorDocButton(for: actionsViewModel.error)
-            Button("好", role: .cancel) {}
-        } message: {
-            Text(actionsViewModel.error ?? "")
         }
     }
 
