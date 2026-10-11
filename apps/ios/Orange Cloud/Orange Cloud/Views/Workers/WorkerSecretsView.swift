@@ -79,7 +79,7 @@ struct WorkerSecretsView: View {
     }
 
     @ViewBuilder
-    private func sheetDestination(for kind: SheetKind) -> some View {
+    private func sheetDestination(for kind: EditorSheet) -> some View {
         switch kind {
         case .bulkImport:
             WorkerBulkImportSheet(viewModel: viewModel)

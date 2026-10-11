@@ -97,7 +97,7 @@ struct WAFRuleListView: View {
         .refreshable { await detachedRefresh { await viewModel.load() } }
     }
 
-    private func ruleRow(for rule: WAFCustomRule) -> some View {
+    private func ruleRow(for rule: WAFRule) -> some View {
         WAFRuleRow(
             rule: rule,
             canWrite: canWrite,
