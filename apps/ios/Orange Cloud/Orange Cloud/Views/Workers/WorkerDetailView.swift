@@ -45,180 +45,214 @@ struct WorkerDetailView: View {
     private var canViewIssues: Bool { entitlements.isPro && auth.hasScope("workers-observability.read") }
 
     var body: some View {
+        listWithModifiers
+    }
+
+    // MARK: - body 拆分
+    //
+    // 原 body 是单个上百行的表达式。Swift 类型检查器在 Release 配置下无法在合理时间内
+    // 完成重载解析（ContentUnavailableView / alert / sheet / confirmationDialog 等
+    // 都是重载函数，串在一条链上会组合爆炸），报 unable to type-check this expression
+    // in reasonable time。这里按语义拆成独立属性，把「一次性推断」降为「分段推断」。
+    // 纯结构切分，视图内容零改动。
+
+    /// List 的 modifier 链（daybreakList / 标题 / sheet / alert / task / refreshable）
+    private var listWithModifiers: some View {
+        mainList
+    .daybreakList()
+    .navigationTitle(script.id)
+    .navigationBarTitleDisplayMode(.inline)
+    .sheet(isPresented: $showUpload) {
+        WorkerUploadView(mode: .replace(scriptName: script.id), viewModel: uploadViewModel) {}
+    }
+    .sheet(isPresented: $editPaywallPresented) {
+        PaywallView(feature: .workerEdit)
+    }
+    .sensoryFeedback(.success, trigger: uploadViewModel.didUpload)
+    .alert("权限不足", isPresented: $uploadDenied) {
+        Button("好", role: .cancel) {}
+    } message: {
+        Text("当前授权未包含 Workers 写权限（workers-scripts.write）。\n请在设置中退出登录后重新授权以启用此功能。")
+    }
+    .task(id: metricsViewModel.range) {
+        guard canViewMetrics else { return }
+        await metricsViewModel.load()
+    }
+    .task { await loadIssueCount() }
+    .task { await loadPreviews() }
+    .refreshable {
+        await loadIssueCount()
+        await loadPreviews()
+        guard canViewMetrics else { return }
+        await metricsViewModel.refresh()
+    }
+    }
+
+    private var mainList: some View {
         List {
-            Section("信息") {
-                if let usageModel = script.usageModel {
-                    LabeledContent("Usage Model", value: usageModel)
-                }
-                if !script.handlers.isEmpty {
-                    LabeledContent("Handlers", value: script.handlers.joined(separator: ", "))
-                }
-                LabeledContent("Logpush", value: script.logpush ? String(localized: "开启") : String(localized: "关闭"))
-                if let created = WorkerScript.parseDate(script.createdOn) {
-                    LabeledContent("创建时间") {
-                        Text(created, format: .dateTime.year().month().day().hour().minute())
-                    }
-                }
-                if let modified = WorkerScript.parseDate(script.modifiedOn) {
-                    LabeledContent("最近部署") {
-                        Text(modified, format: .relative(presentation: .named))
-                    }
-                }
+            workerInfoSection
+    metricsSection
+        .glassRow()
+            workerPreviewsSection
+            workerManageSection
+            workerDebugSection
+        }
+    }
+
+    @ViewBuilder
+    private var workerInfoSection: some View {
+    Section("信息") {
+        if let usageModel = script.usageModel {
+            LabeledContent("Usage Model", value: usageModel)
+        }
+        if !script.handlers.isEmpty {
+            LabeledContent("Handlers", value: script.handlers.joined(separator: ", "))
+        }
+        LabeledContent("Logpush", value: script.logpush ? String(localized: "开启") : String(localized: "关闭"))
+        if let created = WorkerScript.parseDate(script.createdOn) {
+            LabeledContent("创建时间") {
+                Text(created, format: .dateTime.year().month().day().hour().minute())
             }
+        }
+        if let modified = WorkerScript.parseDate(script.modifiedOn) {
+            LabeledContent("最近部署") {
+                Text(modified, format: .relative(presentation: .named))
+            }
+        }
+    }
+    .glassRow()
+    }
+
+    @ViewBuilder
+    private var workerPreviewsSection: some View {
+    if !previews.isEmpty {
+        previewsSection
             .glassRow()
+    }
 
-            metricsSection
-                .glassRow()
+    }
 
-            if !previews.isEmpty {
-                previewsSection
-                    .glassRow()
+    @ViewBuilder
+    private var workerManageSection: some View {
+    Section("管理") {
+        Button {
+            // 编辑（更新代码）收进 Pro：非 Pro 先弹付费墙，Pro 再走 scope 门控
+            if !entitlements.isPro {
+                editPaywallPresented = true
+            } else if canWrite {
+                showUpload = true
+            } else {
+                uploadDenied = true
             }
-
-            Section("管理") {
-                Button {
-                    // 编辑（更新代码）收进 Pro：非 Pro 先弹付费墙，Pro 再走 scope 门控
-                    if !entitlements.isPro {
-                        editPaywallPresented = true
-                    } else if canWrite {
-                        showUpload = true
-                    } else {
-                        uploadDenied = true
-                    }
-                } label: {
-                    HStack(spacing: 12) {
-                        TintIcon(systemImage: "arrow.up.doc", color: .ocOrange)
-                        Text("更新代码").foregroundStyle(.primary)
-                        Spacer()
-                        if entitlements.isPro {
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        } else {
-                            ProBadge()
-                        }
-                    }
-                }
-                ProGatedNavigationLink(
-                    label: String(localized: "变量与密钥"),
-                    systemImage: "key",
-                    requiredScope: "workers-scripts.read",
-                    feature: .workerSecrets
-                ) {
-                    WorkerSecretsView(accountId: script.accountId, scriptName: script.id, session: session)
-                }
-                ProGatedNavigationLink(
-                    label: String(localized: "触发器"),
-                    systemImage: "clock",
-                    requiredScope: "workers-scripts.read",
-                    feature: .workerTriggers
-                ) {
-                    WorkerTriggersView(accountId: script.accountId, scriptName: script.id, session: session)
-                }
-                PermissionGatedNavigationLink(
-                    label: String(localized: "构建"),
-                    systemImage: "hammer.circle",
-                    requiredScope: "workers-ci.read",
-                    tint: .teal,
-                    showsChevron: true
-                ) {
-                    WorkerBuildsView(scriptName: script.id, session: session)
-                }
-                ProGatedNavigationLink(
-                    label: String(localized: "部署历史"),
-                    systemImage: "clock.arrow.circlepath",
-                    requiredScope: "workers-scripts.read",
-                    feature: .workerRoutes
-                ) {
-                    WorkerDeploymentsView(accountId: script.accountId, scriptName: script.id, session: session)
-                }
-                ProGatedNavigationLink(
-                    label: String(localized: "域名"),
-                    systemImage: "globe",
-                    requiredScope: "workers-scripts.read",
-                    feature: .workerRoutes
-                ) {
-                    WorkerRoutesView(accountId: script.accountId, scriptName: script.id, session: session)
-                }
-            }
-            .glassRow()
-
-            Section("调试") {
-                ProGatedNavigationLink(
-                    label: String(localized: "实时日志"),
-                    systemImage: "text.alignleft",
-                    requiredScope: "workers-tail.read",
-                    feature: .workerTail
-                ) {
-                    WorkerTailView(accountId: script.accountId, scriptName: script.id, session: session)
-                }
-                // 历史日志与实时日志互补：tail 只播放连接期间的调用，这里查已落库的事件
-                ProGatedNavigationLink(
-                    label: String(localized: "历史日志"),
-                    systemImage: "clock.badge.checkmark",
-                    requiredScope: "workers-observability.read",
-                    feature: .workerTail
-                ) {
-                    WorkerLogsView(accountId: script.accountId, scriptName: script.id, session: session)
-                }
-                // Workers Issues：该 Worker 的活跃问题数，点进按 service 过滤的问题列表
-                if canViewIssues {
-                    NavigationLink {
-                        WorkerIssuesView(accountId: script.accountId, scriptName: script.id, session: session)
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "exclamationmark.bubble", color: .ocOrange)
-                            Text("问题").foregroundStyle(.primary)
-                            Spacer()
-                            if let count = activeIssueCount {
-                                Text(count.formatted())
-                                    .font(.subheadline.weight(count > 0 ? .semibold : .regular))
-                                    .foregroundStyle(count > 0 ? Color.red : Color.secondary)
-                                    .monospacedDigit()
-                            }
-                        }
-                    }
+        } label: {
+            HStack(spacing: 12) {
+                TintIcon(systemImage: "arrow.up.doc", color: .ocOrange)
+                Text("更新代码").foregroundStyle(.primary)
+                Spacer()
+                if entitlements.isPro {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
                 } else {
-                    // 未解锁 / 缺 scope：沿用门控行的付费墙与重授权提示
-                    ProGatedNavigationLink(
-                        label: String(localized: "问题"),
-                        systemImage: "exclamationmark.bubble",
-                        requiredScope: "workers-observability.read",
-                        feature: .workerTail
-                    ) {
-                        WorkerIssuesView(accountId: script.accountId, scriptName: script.id, session: session)
+                    ProBadge()
+                }
+            }
+        }
+        ProGatedNavigationLink(
+            label: String(localized: "变量与密钥"),
+            systemImage: "key",
+            requiredScope: "workers-scripts.read",
+            feature: .workerSecrets
+        ) {
+            WorkerSecretsView(accountId: script.accountId, scriptName: script.id, session: session)
+        }
+        ProGatedNavigationLink(
+            label: String(localized: "触发器"),
+            systemImage: "clock",
+            requiredScope: "workers-scripts.read",
+            feature: .workerTriggers
+        ) {
+            WorkerTriggersView(accountId: script.accountId, scriptName: script.id, session: session)
+        }
+        PermissionGatedNavigationLink(
+            label: String(localized: "构建"),
+            systemImage: "hammer.circle",
+            requiredScope: "workers-ci.read",
+            tint: .teal,
+            showsChevron: true
+        ) {
+            WorkerBuildsView(scriptName: script.id, session: session)
+        }
+        ProGatedNavigationLink(
+            label: String(localized: "部署历史"),
+            systemImage: "clock.arrow.circlepath",
+            requiredScope: "workers-scripts.read",
+            feature: .workerRoutes
+        ) {
+            WorkerDeploymentsView(accountId: script.accountId, scriptName: script.id, session: session)
+        }
+        ProGatedNavigationLink(
+            label: String(localized: "域名"),
+            systemImage: "globe",
+            requiredScope: "workers-scripts.read",
+            feature: .workerRoutes
+        ) {
+            WorkerRoutesView(accountId: script.accountId, scriptName: script.id, session: session)
+        }
+    }
+    .glassRow()
+    }
+
+    @ViewBuilder
+    private var workerDebugSection: some View {
+    Section("调试") {
+        ProGatedNavigationLink(
+            label: String(localized: "实时日志"),
+            systemImage: "text.alignleft",
+            requiredScope: "workers-tail.read",
+            feature: .workerTail
+        ) {
+            WorkerTailView(accountId: script.accountId, scriptName: script.id, session: session)
+        }
+        // 历史日志与实时日志互补：tail 只播放连接期间的调用，这里查已落库的事件
+        ProGatedNavigationLink(
+            label: String(localized: "历史日志"),
+            systemImage: "clock.badge.checkmark",
+            requiredScope: "workers-observability.read",
+            feature: .workerTail
+        ) {
+            WorkerLogsView(accountId: script.accountId, scriptName: script.id, session: session)
+        }
+        // Workers Issues：该 Worker 的活跃问题数，点进按 service 过滤的问题列表
+        if canViewIssues {
+            NavigationLink {
+                WorkerIssuesView(accountId: script.accountId, scriptName: script.id, session: session)
+            } label: {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "exclamationmark.bubble", color: .ocOrange)
+                    Text("问题").foregroundStyle(.primary)
+                    Spacer()
+                    if let count = activeIssueCount {
+                        Text(count.formatted())
+                            .font(.subheadline.weight(count > 0 ? .semibold : .regular))
+                            .foregroundStyle(count > 0 ? Color.red : Color.secondary)
+                            .monospacedDigit()
                     }
                 }
             }
-            .glassRow()
+        } else {
+            // 未解锁 / 缺 scope：沿用门控行的付费墙与重授权提示
+            ProGatedNavigationLink(
+                label: String(localized: "问题"),
+                systemImage: "exclamationmark.bubble",
+                requiredScope: "workers-observability.read",
+                feature: .workerTail
+            ) {
+                WorkerIssuesView(accountId: script.accountId, scriptName: script.id, session: session)
+            }
         }
-        .daybreakList()
-        .navigationTitle(script.id)
-        .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showUpload) {
-            WorkerUploadView(mode: .replace(scriptName: script.id), viewModel: uploadViewModel) {}
-        }
-        .sheet(isPresented: $editPaywallPresented) {
-            PaywallView(feature: .workerEdit)
-        }
-        .sensoryFeedback(.success, trigger: uploadViewModel.didUpload)
-        .alert("权限不足", isPresented: $uploadDenied) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text("当前授权未包含 Workers 写权限（workers-scripts.write）。\n请在设置中退出登录后重新授权以启用此功能。")
-        }
-        .task(id: metricsViewModel.range) {
-            guard canViewMetrics else { return }
-            await metricsViewModel.load()
-        }
-        .task { await loadIssueCount() }
-        .task { await loadPreviews() }
-        .refreshable {
-            await loadIssueCount()
-            await loadPreviews()
-            guard canViewMetrics else { return }
-            await metricsViewModel.refresh()
-        }
+    }
+    .glassRow()
     }
 
     /// 预览（beta，只读，免费）：失败静默隐藏

@@ -30,156 +30,196 @@ struct SnippetDetailView: View {
     private var myRules: [SnippetRule] { viewModel.rules(for: snippet.snippetName) }
 
     var body: some View {
+        listWithDialogs
+    }
+
+    // MARK: - body 拆分
+    //
+    // 原 body 是单个上百行的表达式。Swift 类型检查器在 Release 配置下无法在合理时间内
+    // 完成重载解析（ContentUnavailableView / alert / sheet / confirmationDialog 等
+    // 都是重载函数，串在一条链上会组合爆炸），报 unable to type-check this expression
+    // in reasonable time。这里按语义拆成独立属性，把「一次性推断」降为「分段推断」。
+    // 纯结构切分，视图内容零改动。
+
+    /// 权限不足 / 错误提示
+    private var listWithDialogs: some View {
+        listWithSheets
+    .alert("权限不足", isPresented: $showDenied) {
+        Button("好", role: .cancel) {}
+    } message: {
+        Text("当前授权未包含 Snippets 编辑权限（snippets.write）。")
+    }
+    .alert("出错了", isPresented: .init(
+        get: { viewModel.error != nil && !showEditor && !showAddRule && ruleToEdit == nil },
+        set: { if !$0 { viewModel.error = nil } }
+    )) {
+        apiErrorDocButton(for: viewModel.error)
+        Button("好", role: .cancel) {}
+    } message: {
+        Text(viewModel.error ?? "")
+    }
+    }
+
+    /// 两个删除确认弹窗
+    private var listWithSheets: some View {
+        listWithChrome
+    .confirmationDialog(
+        "删除规则",
+        isPresented: .init(
+            get: { ruleToDelete != nil },
+            set: { if !$0 { ruleToDelete = nil } }
+        ),
+        titleVisibility: .visible
+    ) {
+        if let rule = ruleToDelete {
+            Button("删除「\(rule.description ?? String(localized: "未命名规则"))」", role: .destructive) {
+                Task { await viewModel.deleteRule(rule) }
+            }
+        }
+    } message: {
+        Text("此操作不可撤销，规则将立即停止生效。")
+    }
+    .confirmationDialog(
+        "删除 Snippet「\(snippet.snippetName)」？",
+        isPresented: $showDeleteSnippet,
+        titleVisibility: .visible
+    ) {
+        Button("删除", role: .destructive) {
+            Task {
+                await viewModel.deleteSnippet(snippet)
+                if viewModel.error == nil { dismiss() }
+            }
+        }
+    } message: {
+        Text("将同时移除指向它的触发规则，此操作不可撤销。")
+    }
+    }
+
+    /// 导航 / 工具栏 / task / sheet
+    private var listWithChrome: some View {
+        mainList
+    .scrollContentBackground(.hidden)
+    .background { SkyBackground() }
+    .navigationTitle(snippet.snippetName)
+    .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button("编辑代码", systemImage: "pencil") {
+                if canWrite { showEditor = true } else { showDenied = true }
+            }
+        }
+    }
+    .task { await loadCode() }
+    .sheet(isPresented: $showEditor, onDismiss: { Task { await loadCode() } }) {
+        SnippetEditorView(viewModel: viewModel, existing: snippet)
+    }
+    .sheet(isPresented: $showAddRule) {
+        SnippetRuleFormView(viewModel: viewModel, snippetName: snippet.snippetName)
+    }
+    .sheet(item: $ruleToEdit) { rule in
+        SnippetRuleFormView(viewModel: viewModel, snippetName: snippet.snippetName, existing: rule)
+    }
+    }
+
+    private var mainList: some View {
         List {
-            // 代码
-            Section {
-                if loadingCode {
-                    HStack { Spacer(); ProgressView(); Spacer() }
-                        .padding(.vertical, 8)
-                } else if let code, !code.isEmpty {
-                    ScrollView {
-                        Text(code)
-                            .font(.caption.monospaced())
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                    }
-                    .frame(maxHeight: 320)
-                    // JS 源码始终 LTR
-                    .environment(\.layoutDirection, .leftToRight)
-                } else {
-                    Text("（空）").foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("代码")
-            }
-            .glassRow()
+            snippetCodeSection
+            snippetRulesSection
+            snippetDangerSection
+        }
+    }
 
-            // 触发规则
-            Section {
-                if myRules.isEmpty {
-                    Text("未配置触发规则，此 Snippet 不会执行。")
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
-                } else {
-                    ForEach(myRules) { rule in
-                        SnippetRuleRow(
-                            rule: rule,
-                            canWrite: canWrite,
-                            isToggling: viewModel.togglingRuleId == rule.id,
-                            onToggle: { enabled in
-                                Task { await viewModel.setRule(rule, enabled: enabled) }
-                            },
-                            onEdit: {
-                                if canWrite { ruleToEdit = rule } else { showDenied = true }
-                            },
-                            onDenied: { showDenied = true }
-                        )
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                if canWrite { ruleToDelete = rule } else { showDenied = true }
-                            } label: {
-                                Label("删除", systemImage: "trash")
-                            }
-                            Button {
-                                if canWrite { ruleToEdit = rule } else { showDenied = true }
-                            } label: {
-                                Label("编辑", systemImage: "pencil")
-                            }
-                            .tint(.orange)
-                        }
-                    }
-                }
-            } header: {
-                HStack {
-                    Text("触发规则")
-                    Spacer()
-                    if canWrite {
-                        Button("添加", systemImage: "plus") { showAddRule = true }
-                            .font(.caption)
-                    }
-                }
-            } footer: {
-                Text("规则用 Cloudflare Rules 表达式匹配请求，满足时运行此 Snippet。点按规则可编辑。")
+    @ViewBuilder
+    private var snippetCodeSection: some View {
+    // 代码
+    Section {
+        if loadingCode {
+            HStack { Spacer(); ProgressView(); Spacer() }
+                .padding(.vertical, 8)
+        } else if let code, !code.isEmpty {
+            ScrollView {
+                Text(code)
+                    .font(.caption.monospaced())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
             }
-            .glassRow()
+            .frame(maxHeight: 320)
+            // JS 源码始终 LTR
+            .environment(\.layoutDirection, .leftToRight)
+        } else {
+            Text("（空）").foregroundStyle(.secondary)
+        }
+    } header: {
+        Text("代码")
+    }
+    .glassRow()
+    }
 
-            // 危险操作
-            if canWrite {
-                Section {
+    @ViewBuilder
+    private var snippetRulesSection: some View {
+    // 触发规则
+    Section {
+        if myRules.isEmpty {
+            Text("未配置触发规则，此 Snippet 不会执行。")
+                .font(.footnote)
+                .foregroundStyle(.orange)
+        } else {
+            ForEach(myRules) { rule in
+                SnippetRuleRow(
+                    rule: rule,
+                    canWrite: canWrite,
+                    isToggling: viewModel.togglingRuleId == rule.id,
+                    onToggle: { enabled in
+                        Task { await viewModel.setRule(rule, enabled: enabled) }
+                    },
+                    onEdit: {
+                        if canWrite { ruleToEdit = rule } else { showDenied = true }
+                    },
+                    onDenied: { showDenied = true }
+                )
+                .swipeActions(edge: .trailing) {
                     Button(role: .destructive) {
-                        showDeleteSnippet = true
+                        if canWrite { ruleToDelete = rule } else { showDenied = true }
                     } label: {
-                        Label("删除 Snippet", systemImage: "trash")
+                        Label("删除", systemImage: "trash")
                     }
-                }
-                .glassRow()
-            }
-        }
-        .scrollContentBackground(.hidden)
-        .background { SkyBackground() }
-        .navigationTitle(snippet.snippetName)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("编辑代码", systemImage: "pencil") {
-                    if canWrite { showEditor = true } else { showDenied = true }
+                    Button {
+                        if canWrite { ruleToEdit = rule } else { showDenied = true }
+                    } label: {
+                        Label("编辑", systemImage: "pencil")
+                    }
+                    .tint(.orange)
                 }
             }
         }
-        .task { await loadCode() }
-        .sheet(isPresented: $showEditor, onDismiss: { Task { await loadCode() } }) {
-            SnippetEditorView(viewModel: viewModel, existing: snippet)
-        }
-        .sheet(isPresented: $showAddRule) {
-            SnippetRuleFormView(viewModel: viewModel, snippetName: snippet.snippetName)
-        }
-        .sheet(item: $ruleToEdit) { rule in
-            SnippetRuleFormView(viewModel: viewModel, snippetName: snippet.snippetName, existing: rule)
-        }
-        .confirmationDialog(
-            "删除规则",
-            isPresented: .init(
-                get: { ruleToDelete != nil },
-                set: { if !$0 { ruleToDelete = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let rule = ruleToDelete {
-                Button("删除「\(rule.description ?? String(localized: "未命名规则"))」", role: .destructive) {
-                    Task { await viewModel.deleteRule(rule) }
-                }
+    } header: {
+        HStack {
+            Text("触发规则")
+            Spacer()
+            if canWrite {
+                Button("添加", systemImage: "plus") { showAddRule = true }
+                    .font(.caption)
             }
-        } message: {
-            Text("此操作不可撤销，规则将立即停止生效。")
         }
-        .confirmationDialog(
-            "删除 Snippet「\(snippet.snippetName)」？",
-            isPresented: $showDeleteSnippet,
-            titleVisibility: .visible
-        ) {
-            Button("删除", role: .destructive) {
-                Task {
-                    await viewModel.deleteSnippet(snippet)
-                    if viewModel.error == nil { dismiss() }
-                }
+    } footer: {
+        Text("规则用 Cloudflare Rules 表达式匹配请求，满足时运行此 Snippet。点按规则可编辑。")
+    }
+    .glassRow()
+    }
+
+    @ViewBuilder
+    private var snippetDangerSection: some View {
+    // 危险操作
+    if canWrite {
+        Section {
+            Button(role: .destructive) {
+                showDeleteSnippet = true
+            } label: {
+                Label("删除 Snippet", systemImage: "trash")
             }
-        } message: {
-            Text("将同时移除指向它的触发规则，此操作不可撤销。")
         }
-        .alert("权限不足", isPresented: $showDenied) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text("当前授权未包含 Snippets 编辑权限（snippets.write）。")
-        }
-        .alert("出错了", isPresented: .init(
-            get: { viewModel.error != nil && !showEditor && !showAddRule && ruleToEdit == nil },
-            set: { if !$0 { viewModel.error = nil } }
-        )) {
-            apiErrorDocButton(for: viewModel.error)
-            Button("好", role: .cancel) {}
-        } message: {
-            Text(viewModel.error ?? "")
-        }
+        .glassRow()
+    }
     }
 
     private func loadCode() async {

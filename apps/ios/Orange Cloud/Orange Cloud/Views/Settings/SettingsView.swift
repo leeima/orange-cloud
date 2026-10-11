@@ -32,324 +32,362 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                // ── Cloudflare 账号（登录身份）──
-                Section {
-                    ForEach(auth.sessions) { identity in
-                        NavigationLink {
-                            IdentityDetailView(identity: identity)
-                        } label: {
-                            identityRow(identity)
-                        }
-                    }
+            listWithSheets
+        }
+    }
 
-                    Button {
-                        // 多账号是 Pro 功能：已有身份且未解锁时走付费墙
-                        if !entitlements.isPro && !auth.sessions.isEmpty {
-                            showAddAccountPaywall = true
-                        } else {
-                            showAddAccount = true
-                        }
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "plus", color: .ocOrange, size: 38)
-                            Text("添加账号")
-                                .foregroundStyle(Color.ocOrangeText)
-                            if !entitlements.isPro && !auth.sessions.isEmpty {
-                                Spacer()
-                                ProBadge()
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    }
-                } header: {
-                    Text("Cloudflare 账号")
-                } footer: {
-                    Text("每个账号独立登录授权。点击账号查看权限与退出登录。")
-                }
-                .glassRow()
+    // MARK: - body 拆分
+    //
+    // 原 body 是单个上百行的表达式。Swift 类型检查器在 Release 配置下无法在合理时间内
+    // 完成重载解析（ContentUnavailableView / alert / sheet / confirmationDialog 等
+    // 都是重载函数，串在一条链上会组合爆炸），报 unable to type-check this expression
+    // in reasonable time。这里按语义拆成独立属性，把「一次性推断」降为「分段推断」。
+    // 纯结构切分，视图内容零改动。
 
-                // ── Orange Cloud Pro（已解锁全部功能）──
-                Section {
-                    HStack(spacing: 12) {
-                        TintIcon(systemImage: "sparkles", color: .ocOrange)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Orange Cloud Pro")
-                                .foregroundStyle(.primary)
-                            Text("已解锁全部功能")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Image(systemName: "checkmark.seal.fill")
-                            .foregroundStyle(Color.ocOrangeText)
-                    }
-                    .padding(.vertical, 2)
-                }
-                .glassRow()
-
-                // ── 用量口径 ──
-                Section {
-                    Picker(selection: $dayBoundaryRaw) {
-                        ForEach(DayBoundary.allCases) { boundary in
-                            Text(boundary.label).tag(boundary.rawValue)
-                        }
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "clock", color: .ocOrange)
-                            Text("「今日」按")
-                        }
-                    }
-                } header: {
-                    Text("用量")
-                } footer: {
-                    Text("决定用量统计里「今日」从哪个零点起算。Cloudflare 免费额度按 UTC 重置，选「本地时间」只改变 App 的统计窗口，不改变额度重置时刻；D1/KV 受接口按 UTC 天聚合的限制，始终按 UTC 统计。")
-                }
-                .glassRow()
-
-                // ── 外观与语言 ──
-                Section {
-                    Picker(selection: $appearanceRaw) {
-                        ForEach(AppAppearance.allCases) { mode in
-                            Text(mode.label).tag(mode.rawValue)
-                        }
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "circle.lefthalf.filled", color: .indigo)
-                            Text("外观")
-                        }
-                    }
-
-                    Picker(selection: $languageRaw) {
-                        ForEach(AppLanguage.allCases) { language in
-                            Text(language.label).tag(language.rawValue)
-                        }
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "character.bubble", color: .teal)
-                            Text("语言")
-                        }
-                    }
-
-                    Toggle(isOn: $reduceAnimations) {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "wand.and.rays.inverse", color: .purple)
-                            Text("减少动画")
-                        }
-                    }
-                } header: {
-                    Text("外观与语言")
-                } footer: {
-                    Text("语言默认跟随系统，更改后需重新打开 App 生效。开启「减少动画」后，页面切换与界面变化将省去过渡动画，操作更跟手。")
-                }
-                .onChange(of: languageRaw) {
-                    (AppLanguage(rawValue: languageRaw) ?? .system).apply()
-                }
-                .glassRow()
-
-                // ── 通知 ──
-                NotificationSettingsSection()
-
-                // ── 推送中心（免登录可用；登录后可联动 CF 告警）──
-                Section {
-                    NavigationLink {
-                        PushCenterView()
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "bell.badge.fill", color: .ocOrange)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("推送中心")
-                                    .foregroundStyle(.primary)
-                                Text("推送端点 · CF 告警直推")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                } footer: {
-                    Text("给自己的端点 curl 即推到手机；登录后还能把 Cloudflare 告警的 webhook 指过来。")
-                }
-                .glassRow()
-
-                // ── 服务状态 ──
-                Section {
-                    NavigationLink {
-                        CloudflareStatusView()
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "waveform.path.ecg", color: .green)
-                            Text("Cloudflare 状态")
-                        }
-                    }
-                } header: {
-                    Text("服务状态")
-                } footer: {
-                    Text("来自 cloudflarestatus.com 的官方服务状态与事件。")
-                }
-                .glassRow()
-
-                // ── 指南（官网内容，免登录可用）──
-                Section {
-                    NavigationLink {
-                        GuidesListView()
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "book", color: .brown)
-                            Text("指南")
-                        }
-                    }
-                } header: {
-                    Text("学习")
-                } footer: {
-                    Text("Cloudflare 排障与科普长文，来自 Orange Cloud 官网；设备语言不是原文语言时可用机内翻译阅读。")
-                }
-                .glassRow()
-
-                // ── 开发者工具箱（免登录可用）──
-                Section {
-                    Button {
-                        AppRouter.shared.presentToolbox = true
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "wrench.and.screwdriver", color: .ocOrange)
-                            Text("开发者工具箱")
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                } header: {
-                    Text("工具")
-                } footer: {
-                    Text("DNS、SSL、HTTP、WHOIS、CIDR 等随身工具，无需 CF 账号。")
-                }
-                .glassRow()
-
-                // ── 审计日志（账号级，Pro）──
-                Section {
-                    if entitlements.isPro {
-                        NavigationLink {
-                            AuditLogListView(session: session)
-                        } label: {
-                            HStack(spacing: 12) {
-                                TintIcon(systemImage: "clock.arrow.circlepath", color: .indigo)
-                                Text("审计日志")
-                            }
-                        }
-                    } else {
-                        Button {
-                            showAuditPaywall = true
-                        } label: {
-                            HStack(spacing: 12) {
-                                TintIcon(systemImage: "clock.arrow.circlepath", color: .indigo)
-                                Text("审计日志")
-                                    .foregroundStyle(.primary)
-                                Spacer()
-                                ProBadge()
-                            }
-                        }
-                    }
-                } header: {
-                    Text("审计日志")
-                } footer: {
-                    Text("查看当前账号最近 30 天「谁在何时改了什么」。")
-                }
-                .glassRow()
-
-                // ── 帮助与反馈 ──
-                Section {
-                    Button {
-                        showFeedback = true
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "envelope", color: .ocOrange)
-                            Text("发送反馈")
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    Button {
-                        exportLogs()
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "doc.text.magnifyingglass", color: .gray)
-                            Text("导出诊断日志")
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                } header: {
-                    Text("帮助与反馈")
-                } footer: {
-                    Text("反馈通过邮件发送给我们，可附带本地诊断日志（不含你的令牌或密钥）便于排查问题。")
-                }
-                .glassRow()
-
-                // ── 体验者计划（opt-in 遥测）──
-                Section {
-                    Toggle(isOn: Bindable(TelemetryStore.shared).isOptedIn) {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "waveform.path.ecg", color: .teal)
-                            Text("体验者计划")
-                        }
-                    }
-                } footer: {
-                    Text("开启后上报匿名诊断日志与崩溃信息（不含令牌、账号数据或任何个人信息），帮助我们更快定位登录与稳定性问题。")
-                }
-                .glassRow()
-
-                // ── 关于（详情收进二级页，给根页减负）──
-                Section {
-                    NavigationLink {
-                        AboutView()
-                    } label: {
-                        HStack(spacing: 12) {
-                            TintIcon(systemImage: "info", color: .blue)
-                            Text("关于")
-                        }
-                    }
-                } footer: {
-                    Text("版本、评分、社区与法律信息。")
-                }
-                .glassRow()
-
-                // ── 来自柘家科技（同开发者的其他 App，放在最底部）──
-                MoreAppsSection()
-            }
-            .daybreakList()
-            .navigationTitle("设置")
-            .task {
-                await session.ensureAccounts()
-            }
-            .sheet(isPresented: $showAddAccount) {
-                AddAccountSheet()
-            }
-            .sheet(isPresented: $showProPaywall) {
-                PaywallView()
-            }
-            .sheet(isPresented: $showAddAccountPaywall) {
-                PaywallView(feature: .multiAccount)
-            }
-            .sheet(isPresented: $showAuditPaywall) {
-                PaywallView(feature: .auditLog)
-            }
-            .sheet(isPresented: $showFeedback) {
-                FeedbackView()
-            }
-            .sheet(isPresented: logShareBinding) {
-                if let logShareItems {
-                    ActivityView(items: logShareItems)
-                }
+    /// List 的 modifier 链（daybreakList / 标题 / task / 6 个 sheet）
+    private var listWithSheets: some View {
+        mainList
+        .daybreakList()
+        .navigationTitle("设置")
+        .task {
+            await session.ensureAccounts()
+        }
+        .sheet(isPresented: $showAddAccount) {
+            AddAccountSheet()
+        }
+        .sheet(isPresented: $showProPaywall) {
+            PaywallView()
+        }
+        .sheet(isPresented: $showAddAccountPaywall) {
+            PaywallView(feature: .multiAccount)
+        }
+        .sheet(isPresented: $showAuditPaywall) {
+            PaywallView(feature: .auditLog)
+        }
+        .sheet(isPresented: $showFeedback) {
+            FeedbackView()
+        }
+        .sheet(isPresented: logShareBinding) {
+            if let logShareItems {
+                ActivityView(items: logShareItems)
             }
         }
+    }
+
+    private var mainList: some View {
+        List {
+            settingsGroupAccount
+            settingsGroupAppearance
+            settingsGroupTools
+            settingsGroupAudit
+            settingsGroupAbout
+        }
+    }
+
+    @ViewBuilder
+    private var settingsGroupAccount: some View {
+        // ── Cloudflare 账号（登录身份）──
+        Section {
+            ForEach(auth.sessions) { identity in
+                NavigationLink {
+                    IdentityDetailView(identity: identity)
+                } label: {
+                    identityRow(identity)
+                }
+            }
+
+            Button {
+                // 多账号是 Pro 功能：已有身份且未解锁时走付费墙
+                if !entitlements.isPro && !auth.sessions.isEmpty {
+                    showAddAccountPaywall = true
+                } else {
+                    showAddAccount = true
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "plus", color: .ocOrange, size: 38)
+                    Text("添加账号")
+                        .foregroundStyle(Color.ocOrangeText)
+                    if !entitlements.isPro && !auth.sessions.isEmpty {
+                        Spacer()
+                        ProBadge()
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        } header: {
+            Text("Cloudflare 账号")
+        } footer: {
+            Text("每个账号独立登录授权。点击账号查看权限与退出登录。")
+        }
+        .glassRow()
+
+        // ── Orange Cloud Pro（已解锁全部功能）──
+        Section {
+            HStack(spacing: 12) {
+                TintIcon(systemImage: "sparkles", color: .ocOrange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Orange Cloud Pro")
+                        .foregroundStyle(.primary)
+                    Text("已解锁全部功能")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "checkmark.seal.fill")
+                    .foregroundStyle(Color.ocOrangeText)
+            }
+            .padding(.vertical, 2)
+        }
+        .glassRow()
+
+        // ── 用量口径 ──
+        Section {
+            Picker(selection: $dayBoundaryRaw) {
+                ForEach(DayBoundary.allCases) { boundary in
+                    Text(boundary.label).tag(boundary.rawValue)
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "clock", color: .ocOrange)
+                    Text("「今日」按")
+                }
+            }
+        } header: {
+            Text("用量")
+        } footer: {
+            Text("决定用量统计里「今日」从哪个零点起算。Cloudflare 免费额度按 UTC 重置，选「本地时间」只改变 App 的统计窗口，不改变额度重置时刻；D1/KV 受接口按 UTC 天聚合的限制，始终按 UTC 统计。")
+        }
+        .glassRow()
+    }
+
+    @ViewBuilder
+    private var settingsGroupAppearance: some View {
+        // ── 外观与语言 ──
+        Section {
+            Picker(selection: $appearanceRaw) {
+                ForEach(AppAppearance.allCases) { mode in
+                    Text(mode.label).tag(mode.rawValue)
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "circle.lefthalf.filled", color: .indigo)
+                    Text("外观")
+                }
+            }
+
+            Picker(selection: $languageRaw) {
+                ForEach(AppLanguage.allCases) { language in
+                    Text(language.label).tag(language.rawValue)
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "character.bubble", color: .teal)
+                    Text("语言")
+                }
+            }
+
+            Toggle(isOn: $reduceAnimations) {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "wand.and.rays.inverse", color: .purple)
+                    Text("减少动画")
+                }
+            }
+        } header: {
+            Text("外观与语言")
+        } footer: {
+            Text("语言默认跟随系统，更改后需重新打开 App 生效。开启「减少动画」后，页面切换与界面变化将省去过渡动画，操作更跟手。")
+        }
+        .onChange(of: languageRaw) {
+            (AppLanguage(rawValue: languageRaw) ?? .system).apply()
+        }
+        .glassRow()
+    }
+
+    @ViewBuilder
+    private var settingsGroupTools: some View {
+        // ── 通知 ──
+        NotificationSettingsSection()
+
+        // ── 推送中心（免登录可用；登录后可联动 CF 告警）──
+        Section {
+            NavigationLink {
+                PushCenterView()
+            } label: {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "bell.badge.fill", color: .ocOrange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("推送中心")
+                            .foregroundStyle(.primary)
+                        Text("推送端点 · CF 告警直推")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } footer: {
+            Text("给自己的端点 curl 即推到手机；登录后还能把 Cloudflare 告警的 webhook 指过来。")
+        }
+        .glassRow()
+
+        // ── 服务状态 ──
+        Section {
+            NavigationLink {
+                CloudflareStatusView()
+            } label: {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "waveform.path.ecg", color: .green)
+                    Text("Cloudflare 状态")
+                }
+            }
+        } header: {
+            Text("服务状态")
+        } footer: {
+            Text("来自 cloudflarestatus.com 的官方服务状态与事件。")
+        }
+        .glassRow()
+
+        // ── 指南（官网内容，免登录可用）──
+        Section {
+            NavigationLink {
+                GuidesListView()
+            } label: {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "book", color: .brown)
+                    Text("指南")
+                }
+            }
+        } header: {
+            Text("学习")
+        } footer: {
+            Text("Cloudflare 排障与科普长文，来自 Orange Cloud 官网；设备语言不是原文语言时可用机内翻译阅读。")
+        }
+        .glassRow()
+    }
+
+    @ViewBuilder
+    private var settingsGroupAudit: some View {
+        // ── 开发者工具箱（免登录可用）──
+        Section {
+            Button {
+                AppRouter.shared.presentToolbox = true
+            } label: {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "wrench.and.screwdriver", color: .ocOrange)
+                    Text("开发者工具箱")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        } header: {
+            Text("工具")
+        } footer: {
+            Text("DNS、SSL、HTTP、WHOIS、CIDR 等随身工具，无需 CF 账号。")
+        }
+        .glassRow()
+
+        // ── 审计日志（账号级，Pro）──
+        Section {
+            if entitlements.isPro {
+                NavigationLink {
+                    AuditLogListView(session: session)
+                } label: {
+                    HStack(spacing: 12) {
+                        TintIcon(systemImage: "clock.arrow.circlepath", color: .indigo)
+                        Text("审计日志")
+                    }
+                }
+            } else {
+                Button {
+                    showAuditPaywall = true
+                } label: {
+                    HStack(spacing: 12) {
+                        TintIcon(systemImage: "clock.arrow.circlepath", color: .indigo)
+                        Text("审计日志")
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        ProBadge()
+                    }
+                }
+            }
+        } header: {
+            Text("审计日志")
+        } footer: {
+            Text("查看当前账号最近 30 天「谁在何时改了什么」。")
+        }
+        .glassRow()
+    }
+
+    @ViewBuilder
+    private var settingsGroupAbout: some View {
+        // ── 帮助与反馈 ──
+        Section {
+            Button {
+                showFeedback = true
+            } label: {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "envelope", color: .ocOrange)
+                    Text("发送反馈")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Button {
+                exportLogs()
+            } label: {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "doc.text.magnifyingglass", color: .gray)
+                    Text("导出诊断日志")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        } header: {
+            Text("帮助与反馈")
+        } footer: {
+            Text("反馈通过邮件发送给我们，可附带本地诊断日志（不含你的令牌或密钥）便于排查问题。")
+        }
+        .glassRow()
+
+        // ── 体验者计划（opt-in 遥测）──
+        Section {
+            Toggle(isOn: Bindable(TelemetryStore.shared).isOptedIn) {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "waveform.path.ecg", color: .teal)
+                    Text("体验者计划")
+                }
+            }
+        } footer: {
+            Text("开启后上报匿名诊断日志与崩溃信息（不含令牌、账号数据或任何个人信息），帮助我们更快定位登录与稳定性问题。")
+        }
+        .glassRow()
+
+        // ── 关于（详情收进二级页，给根页减负）──
+        Section {
+            NavigationLink {
+                AboutView()
+            } label: {
+                HStack(spacing: 12) {
+                    TintIcon(systemImage: "info", color: .blue)
+                    Text("关于")
+                }
+            }
+        } footer: {
+            Text("版本、评分、社区与法律信息。")
+        }
+        .glassRow()
+
+        // ── 来自柘家科技（同开发者的其他 App，放在最底部）──
+        MoreAppsSection()
     }
 
     /// 导出诊断日志：写到临时文件并拉起系统分享
