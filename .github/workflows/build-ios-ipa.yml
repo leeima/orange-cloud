@@ -60,6 +60,7 @@ jobs:
             }
 
       - name: Package into IPA
+        if: success()
         run: |
           cd "apps/ios/Orange Cloud"
           mkdir -p Payload
@@ -74,8 +75,16 @@ jobs:
           ls -lh OrangeCloud-Full-Unlocked.ipa
 
       - name: Upload IPA Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: OrangeCloud-Full-Unlocked-IPA
           path: apps/ios/Orange Cloud/OrangeCloud-Full-Unlocked.ipa
           if-no-files-found: error
+
+      - name: Upload Build Log on Failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-failure-log
+          path: apps/ios/Orange Cloud/xcodebuild.log
