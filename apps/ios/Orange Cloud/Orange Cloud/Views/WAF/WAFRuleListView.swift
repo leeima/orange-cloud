@@ -36,130 +36,156 @@ struct WAFRuleListView: View {
         }
     }
 
-    var body: some View {
-        Group {
-            if viewModel.isLoading && !viewModel.loaded {
-                SkeletonList(rows: 6, icon: .none, trailing: true)
-            } else if viewModel.rules.isEmpty {
-                ContentUnavailableView {
-                    Label("没有自定义规则", systemImage: "shield")
-                } description: {
-                    Text(canWrite
-                         ? String(localized: "点击右上角 + 创建第一条防火墙规则")
-                         : String(localized: "在 Cloudflare Dashboard → 安全性 → WAF 中创建自定义规则"))
-                } actions: {
-                    if canWrite {
-                        Button("添加规则") { showForm = true }
-                            .buttonStyle(.borderedProminent)
-                            .tint(Color.ocOrangePressed)
-                            .fontWeight(.bold)
-                    }
-                }
-            } else if filteredRules.isEmpty {
-                ContentUnavailableView.search(text: searchText)
-            } else {
-                List {
-                    Section {
-                        ForEach(filteredRules) { rule in
-                            WAFRuleRow(
-                                rule: rule,
-                                canWrite: canWrite,
-                                isToggling: viewModel.togglingRuleId == rule.id,
-                                onToggle: { enabled in
-                                    Task { await viewModel.toggle(rule: rule, enabled: enabled) }
-                                },
-                                onDenied: { showDenied = true }
-                            )
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                guard canWrite else { return }
-                                // skip 等带额外参数的动作不在表单支持范围，改动会丢参数
-                                if WAFRuleAction(rawValue: rule.action ?? "") != nil {
-                                    editingRule = rule
-                                } else {
-                                    showUnsupportedEdit = true
-                                }
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    if canWrite {
-                                        ruleToDelete = rule
-                                    } else {
-                                        showDenied = true
-                                    }
-                                } label: {
-                                    Label("删除", systemImage: "trash")
-                                }
-                            }
-                        }
-                    } footer: {
-                        Text(canWrite
-                             ? String(localized: "规则按从上到下的顺序执行，点按可编辑，左滑可删除。")
-                             : String(localized: "当前授权仅限读取（zone-waf.read），无法修改规则。"))
-                    }
-                    .glassRow()
-                }
-                .scrollContentBackground(.hidden)
-                .refreshable { await detachedRefresh { await viewModel.load() } }
-            }
-        }
-        .background { SkyBackground() }
-        .navigationTitle("WAF 防火墙")
-        .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, prompt: "搜索规则")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("添加", systemImage: "plus") {
-                    if canWrite {
-                        showForm = true
-                    } else {
-                        showDenied = true
-                    }
-                }
-            }
-        }
-        .sheet(isPresented: $showForm) {
-            WAFRuleFormView(viewModel: viewModel, rule: nil)
-        }
-        .sheet(item: $editingRule) { rule in
-            WAFRuleFormView(viewModel: viewModel, rule: rule)
-        }
-        .task { await viewModel.load() }
-        .confirmationDialog(
-            "删除规则",
-            isPresented: .init(
-                get: { ruleToDelete != nil },
-                set: { if !$0 { ruleToDelete = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let rule = ruleToDelete {
-                Button("删除「\(rule.description ?? String(localized: "未命名规则"))」", role: .destructive) {
-                    Task { await viewModel.delete(rule: rule) }
-                }
-            }
-        } message: {
-            Text("此操作不可撤销，规则将立即停止生效。")
-        }
-        .alert("暂不支持编辑", isPresented: $showUnsupportedEdit) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text("「跳过」等带额外参数的规则暂不支持在 App 内编辑，请在 Cloudflare Dashboard 中修改。")
-        }
-        .alert("权限不足", isPresented: $showDenied) {
-            Button("好", role: .cancel) {}
-        } message: {
-            Text("当前授权未包含 WAF 编辑权限（zone-waf.write）。\n请在设置中退出登录后重新授权以启用此功能。")
-        }
-        .alert("出错了", isPresented: .init(
+    private var isDeleteConfirmationPresented: Binding<Bool> {
+        Binding(
+            get: { ruleToDelete != nil },
+            set: { if !$0 { ruleToDelete = nil } }
+        )
+    }
+
+    private var isErrorAlertPresented: Binding<Bool> {
+        Binding(
             get: { viewModel.error != nil && !showForm && editingRule == nil },
             set: { if !$0 { viewModel.error = nil } }
-        )) {
-            apiErrorDocButton(for: viewModel.error)
-            Button("好", role: .cancel) {}
-        } message: {
-            Text(viewModel.error ?? "")
+        )
+    }
+
+    @ViewBuilder
+    private var mainContent: some View {
+        if viewModel.isLoading && !viewModel.loaded {
+            SkeletonList(rows: 6, icon: .none, trailing: true)
+        } else if viewModel.rules.isEmpty {
+            emptyStateView
+        } else if filteredRules.isEmpty {
+            ContentUnavailableView.search(text: searchText)
+        } else {
+            rulesListView
         }
+    }
+
+    private var emptyStateView: some View {
+        ContentUnavailableView {
+            Label("没有自定义规则", systemImage: "shield")
+        } description: {
+            Text(canWrite
+                 ? String(localized: "点击右上角 + 创建第一条防火墙规则")
+                 : String(localized: "在 Cloudflare Dashboard → 安全性 → WAF 中创建自定义规则"))
+        } actions: {
+            if canWrite {
+                Button("添加规则") { showForm = true }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.ocOrangePressed)
+                    .fontWeight(.bold)
+            }
+        }
+    }
+
+    private var rulesListView: some View {
+        List {
+            Section {
+                ForEach(filteredRules) { rule in
+                    ruleRow(for: rule)
+                }
+            } footer: {
+                Text(canWrite
+                     ? String(localized: "规则按从上到下的顺序执行，点按可编辑，左滑可删除。")
+                     : String(localized: "当前授权仅限读取（zone-waf.read），无法修改规则。"))
+            }
+            .glassRow()
+        }
+        .scrollContentBackground(.hidden)
+        .refreshable { await detachedRefresh { await viewModel.load() } }
+    }
+
+    private func ruleRow(for rule: WAFCustomRule) -> some View {
+        WAFRuleRow(
+            rule: rule,
+            canWrite: canWrite,
+            isToggling: viewModel.togglingRuleId == rule.id,
+            onToggle: { enabled in
+                Task { await viewModel.toggle(rule: rule, enabled: enabled) }
+            },
+            onDenied: { showDenied = true }
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard canWrite else { return }
+            // skip 等带额外参数的动作不在表单支持范围，改动会丢参数
+            if WAFRuleAction(rawValue: rule.action ?? "") != nil {
+                editingRule = rule
+            } else {
+                showUnsupportedEdit = true
+            }
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                if canWrite {
+                    ruleToDelete = rule
+                } else {
+                    showDenied = true
+                }
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var wafToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button("添加", systemImage: "plus") {
+                if canWrite {
+                    showForm = true
+                } else {
+                    showDenied = true
+                }
+            }
+        }
+    }
+
+    var body: some View {
+        mainContent
+            .background { SkyBackground() }
+            .navigationTitle("WAF 防火墙")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "搜索规则")
+            .toolbar { wafToolbar }
+            .sheet(isPresented: $showForm) {
+                WAFRuleFormView(viewModel: viewModel, rule: nil)
+            }
+            .sheet(item: $editingRule) { rule in
+                WAFRuleFormView(viewModel: viewModel, rule: rule)
+            }
+            .task { await viewModel.load() }
+            .confirmationDialog(
+                "删除规则",
+                isPresented: isDeleteConfirmationPresented,
+                titleVisibility: .visible
+            ) {
+                if let rule = ruleToDelete {
+                    Button("删除「\(rule.description ?? String(localized: "未命名规则"))」", role: .destructive) {
+                        Task { await viewModel.delete(rule: rule) }
+                    }
+                }
+            } message: {
+                Text("此操作不可撤销，规则将立即停止生效。")
+            }
+            .alert("暂不支持编辑", isPresented: $showUnsupportedEdit) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text("「跳过」等带额外参数的规则暂不支持在 App 内编辑，请在 Cloudflare Dashboard 中修改。")
+            }
+            .alert("权限不足", isPresented: $showDenied) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text("当前授权未包含 WAF 编辑权限（zone-waf.write）。\n请在设置中退出登录后重新授权以启用此功能。")
+            }
+            .alert("出错了", isPresented: isErrorAlertPresented) {
+                apiErrorDocButton(for: viewModel.error)
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(viewModel.error ?? "")
+            }
     }
 }
 
